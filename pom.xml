@@ -138,6 +138,7 @@
         <module>plugin/trino-redshift</module>
         <module>plugin/trino-resource-group-managers</module>
         <module>plugin/trino-session-property-managers</module>
+        <module>plugin/trino-sneller</module>
         <module>plugin/trino-sqlserver</module>
         <module>plugin/trino-teradata-functions</module>
         <module>plugin/trino-thrift</module>
@@ -444,6 +445,12 @@
                 <artifactId>trino-session-property-managers</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>io.trino</groupId>
+                <artifactId>trino-sneller</artifactId>
+                <version>${project.version}</version>
             </dependency>
 
             <dependency>
@@ -1079,6 +1086,12 @@
                 <groupId>com.qubole.rubix</groupId>
                 <artifactId>rubix-presto-shaded</artifactId>
                 <version>0.3.18</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.sneller.jdbc</groupId>
+                <artifactId>driver</artifactId>
+                <version>1.0-SNAPSHOT</version>
             </dependency>
 
             <dependency>
