@@ -13,22 +13,8 @@
  */
 package io.trino.plugin.sneller;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.slice.Slice;
-import io.trino.plugin.jdbc.BaseJdbcClient;
-import io.trino.plugin.jdbc.BaseJdbcConfig;
-import io.trino.plugin.jdbc.ColumnMapping;
-import io.trino.plugin.jdbc.ConnectionFactory;
-import io.trino.plugin.jdbc.JdbcColumnHandle;
-import io.trino.plugin.jdbc.JdbcExpression;
-import io.trino.plugin.jdbc.JdbcJoinCondition;
-import io.trino.plugin.jdbc.JdbcSortItem;
-import io.trino.plugin.jdbc.JdbcTableHandle;
-import io.trino.plugin.jdbc.JdbcTypeHandle;
-import io.trino.plugin.jdbc.LongWriteFunction;
-import io.trino.plugin.jdbc.SliceWriteFunction;
-import io.trino.plugin.jdbc.WriteMapping;
+import io.trino.plugin.jdbc.*;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRewriter;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRule;
 import io.trino.plugin.jdbc.expression.ImplementAvgDecimal;
@@ -38,26 +24,13 @@ import io.trino.plugin.jdbc.expression.ImplementCountAll;
 import io.trino.plugin.jdbc.expression.ImplementMinMax;
 import io.trino.plugin.jdbc.expression.ImplementSum;
 import io.trino.spi.TrinoException;
-import io.trino.spi.connector.AggregateFunction;
-import io.trino.spi.connector.ColumnHandle;
-import io.trino.spi.connector.ConnectorSession;
-import io.trino.spi.connector.JoinCondition;
-import io.trino.spi.type.CharType;
-import io.trino.spi.type.DecimalType;
-import io.trino.spi.type.Decimals;
-import io.trino.spi.type.TimeType;
-import io.trino.spi.type.TimestampType;
-import io.trino.spi.type.Type;
-import io.trino.spi.type.VarbinaryType;
-import io.trino.spi.type.VarcharType;
+import io.trino.spi.connector.*;
+import io.trino.spi.type.*;
 
 import javax.inject.Inject;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.sql.Types;
-import java.time.LocalTime;
+import java.sql.*;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,70 +38,40 @@ import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.airlift.slice.Slices.wrappedBuffer;
+import static io.trino.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
+import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.*;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
-import static io.trino.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.booleanColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.booleanWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.charWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.defaultCharColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.defaultVarcharColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.fromTrinoTime;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.longTimestampWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.realColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timeReadFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timestampColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timestampWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
+import static io.trino.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
+import static io.trino.plugin.jdbc.StandardColumnMappings.*;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimeType.createTimeType;
-import static io.trino.spi.type.TimestampType.MAX_SHORT_PRECISION;
-import static io.trino.spi.type.TimestampType.createTimestampType;
-import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_DAY;
-import static io.trino.spi.type.Timestamps.round;
+import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
+import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
-import static java.math.RoundingMode.UNNECESSARY;
 import static java.util.stream.Collectors.joining;
 
 public class SnellerClient
         extends BaseJdbcClient
 {
-    // Sneller supports 1000 parameters in prepared statement, let's create a space for about 4 big IN predicates
-    public static final int SNELLER_MAX_LIST_EXPRESSIONS = 250;
-
-    private static final Joiner DOT_JOINER = Joiner.on(".");
-
+    private final Type jsonType;
     private final AggregateFunctionRewriter aggregateFunctionRewriter;
 
-    private static final int MAX_SUPPORTED_TEMPORAL_PRECISION = 7;
-
     @Inject
-    public SnellerClient(BaseJdbcConfig config, ConnectionFactory connectionFactory)
+    public SnellerClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, TypeManager typeManager)
     {
         super(config, "\"", connectionFactory);
+        this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
 
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         this.aggregateFunctionRewriter = new AggregateFunctionRewriter(
@@ -144,6 +87,92 @@ public class SnellerClient
     }
 
     @Override
+    public Optional<JdbcExpression> implementAggregation(ConnectorSession session, AggregateFunction aggregate, Map<String, ColumnHandle> assignments)
+    {
+        // TODO support complex ConnectorExpressions
+        return aggregateFunctionRewriter.rewrite(session, aggregate, assignments);
+    }
+
+    @Override
+    protected Collection<String> listSchemas(Connection connection)
+    {
+        // for Sneller, we need to list catalogs instead of schemas
+        try (ResultSet resultSet = connection.getMetaData().getCatalogs()) {
+            ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
+            while (resultSet.next()) {
+                schemaNames.add(resultSet.getString("TABLE_CAT"));
+            }
+            return schemaNames.build();
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public void abortReadConnection(Connection connection)
+            throws SQLException
+    {
+        // Abort connection before closing. Without this, the SQL Server driver
+        // attempts to drain the connection by reading all the results.
+        connection.abort(directExecutor());
+    }
+
+    @Override
+    protected ResultSet getTables(Connection connection, Optional<String> schemaName, Optional<String> tableName)
+            throws SQLException
+    {
+        // Sneller maps their "database" to SQL catalogs and does not have schemas
+        DatabaseMetaData metadata = connection.getMetaData();
+        return metadata.getTables(
+                schemaName.orElse(null),
+                null,
+                escapeNamePattern(tableName, metadata.getSearchStringEscape()).orElse(null),
+                getTableTypes().map(types -> types.toArray(String[]::new)).orElse(null));
+    }
+
+    @Override
+    protected String getTableSchemaName(ResultSet resultSet)
+            throws SQLException
+    {
+        // Sneller uses catalogs instead of schemas
+        return resultSet.getString("TABLE_CAT");
+    }
+
+
+    @Override
+    public Optional<PreparedQuery> implementJoin(
+            ConnectorSession session,
+            JoinType joinType,
+            PreparedQuery leftSource,
+            PreparedQuery rightSource,
+            List<JdbcJoinCondition> joinConditions,
+            Map<JdbcColumnHandle, String> rightAssignments,
+            Map<JdbcColumnHandle, String> leftAssignments,
+            JoinStatistics statistics)
+    {
+        if (joinType == JoinType.FULL_OUTER) {
+            // Not supported in Sneller
+            return Optional.empty();
+        }
+        return super.implementJoin(session, joinType, leftSource, rightSource, joinConditions, rightAssignments, leftAssignments, statistics);
+    }
+
+    @Override
+    protected boolean isSupportedJoinCondition(JdbcJoinCondition joinCondition)
+    {
+        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
+            // Not supported in Sneller
+            return false;
+        }
+
+        // Remote database can be case insensitive.
+        return Stream.of(joinCondition.getLeftColumn(), joinCondition.getRightColumn())
+                .map(JdbcColumnHandle::getColumnType)
+                .noneMatch(type -> type instanceof CharType || type instanceof VarcharType);
+    }
+
+    @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
@@ -151,17 +180,7 @@ public class SnellerClient
             return mapping;
         }
 
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
-                .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
-
-        if (jdbcTypeName == "varbinary") {
-            return Optional.of(varbinaryColumnMapping());
-        }
-
         switch (typeHandle.getJdbcType()) {
-            case Types.BIT:
-                return Optional.of(booleanColumnMapping());
-
             case Types.TINYINT:
                 return Optional.of(tinyintColumnMapping());
 
@@ -180,168 +199,129 @@ public class SnellerClient
             case Types.DOUBLE:
                 return Optional.of(doubleColumnMapping());
 
-            case Types.NUMERIC:
-            case Types.DECIMAL: {
-                int columnSize = typeHandle.getRequiredColumnSize();
-                int decimalDigits = typeHandle.getRequiredDecimalDigits();
-                // TODO does sql server support negative scale?
-                int precision = columnSize + max(-decimalDigits, 0); // Map decimal(p, -s) (negative scale) to decimal(p+s, 0).
+            case Types.DECIMAL:
+                int decimalDigits = typeHandle.getDecimalDigits().orElseThrow(() -> new IllegalStateException("decimal digits not present"));
+                int precision = typeHandle.getRequiredColumnSize();
+                if (getDecimalRounding(session) == ALLOW_OVERFLOW && precision > Decimals.MAX_PRECISION) {
+                    int scale = min(decimalDigits, getDecimalDefaultScale(session));
+                    return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
+                }
+                // TODO does Sneller support negative scale?
+                precision = precision + max(-decimalDigits, 0); // Map decimal(p, -s) (negative scale) to decimal(p+s, 0).
                 if (precision > Decimals.MAX_PRECISION) {
                     break;
                 }
-                return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0)), UNNECESSARY));
-            }
+                return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0))));
 
             case Types.CHAR:
-            case Types.NCHAR:
                 return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), false));
 
+            // TODO not all these type constants are necessarily used by the JDBC driver
             case Types.VARCHAR:
             case Types.NVARCHAR:
+            case Types.LONGVARCHAR:
+            case Types.LONGNVARCHAR:
                 return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), false));
 
             case Types.BINARY:
             case Types.VARBINARY:
             case Types.LONGVARBINARY:
-                return Optional.of(varbinaryColumnMapping());
+                return Optional.of(ColumnMapping.sliceMapping(VARBINARY, varbinaryReadFunction(), varbinaryWriteFunction(), FULL_PUSHDOWN));
 
             case Types.DATE:
                 return Optional.of(dateColumnMapping());
 
-            case Types.TIME:
-                TimeType timeType = createTimeType(typeHandle.getRequiredDecimalDigits());
-                return Optional.of(ColumnMapping.longMapping(
-                        timeType,
-                        timeReadFunction(timeType),
-                        sqlServerTimeWriteFunction(timeType.getPrecision())));
-
             case Types.TIMESTAMP:
-                int precision = typeHandle.getRequiredDecimalDigits();
-                return Optional.of(timestampColumnMapping(createTimestampType(precision)));
+                // TODO support higher precisions (https://github.com/trinodb/trino/issues/6910)
+                break; // currently handled by the default mappings
         }
 
-        // TODO (https://github.com/trinodb/trino/issues/4593) implement proper type mapping
+        // TODO add explicit mappings
         return legacyToPrestoType(session, connection, typeHandle);
     }
 
     @Override
     public WriteMapping toWriteMapping(ConnectorSession session, Type type)
     {
-        if (type == BOOLEAN) {
-            return WriteMapping.booleanMapping("bit", booleanWriteFunction());
-        }
-
-        if (type == BIGINT) {
-            return WriteMapping.longMapping("bigint", bigintWriteFunction());
-        }
-        if (type == INTEGER) {
-            return WriteMapping.longMapping("integer", integerWriteFunction());
+        if (type == TINYINT) {
+            return WriteMapping.longMapping("tinyint", tinyintWriteFunction());
         }
         if (type == SMALLINT) {
             return WriteMapping.longMapping("smallint", smallintWriteFunction());
         }
-        if (type == TINYINT) {
-            return WriteMapping.longMapping("tinyint", tinyintWriteFunction());
+        if (type == INTEGER) {
+            return WriteMapping.longMapping("integer", integerWriteFunction());
         }
-
+        if (type == BIGINT) {
+            return WriteMapping.longMapping("bigint", bigintWriteFunction());
+        }
+        if (type == REAL) {
+            return WriteMapping.longMapping("float", realWriteFunction());
+        }
         if (type == DOUBLE) {
             return WriteMapping.doubleMapping("double precision", doubleWriteFunction());
         }
 
-        if (type instanceof VarcharType) {
-            VarcharType varcharType = (VarcharType) type;
-            String dataType;
-            if (varcharType.isUnbounded() || varcharType.getBoundedLength() > 4000) {
-                dataType = "nvarchar(max)";
+        if (type instanceof DecimalType) {
+            DecimalType decimalType = (DecimalType) type;
+            String dataType = format("decimal(%s, %s)", decimalType.getPrecision(), decimalType.getScale());
+            if (decimalType.isShort()) {
+                return WriteMapping.longMapping(dataType, shortDecimalWriteFunction(decimalType));
             }
-            else {
-                dataType = "nvarchar(" + varcharType.getBoundedLength() + ")";
-            }
-            return WriteMapping.sliceMapping(dataType, varcharWriteFunction());
-        }
-
-        if (type instanceof CharType) {
-            CharType charType = (CharType) type;
-            String dataType;
-            if (charType.getLength() > 4000) {
-                dataType = "nvarchar(max)";
-            }
-            else {
-                dataType = "nchar(" + charType.getLength() + ")";
-            }
-            return WriteMapping.sliceMapping(dataType, charWriteFunction());
-        }
-
-        if (type instanceof VarbinaryType) {
-            return WriteMapping.sliceMapping("varbinary(max)", varbinaryWriteFunction());
+            return WriteMapping.sliceMapping(dataType, longDecimalWriteFunction(decimalType));
         }
 
         if (type == DATE) {
             return WriteMapping.longMapping("date", dateWriteFunction());
         }
 
-        if (type instanceof TimeType) {
-            TimeType timeType = (TimeType) type;
-            int precision = min(timeType.getPrecision(), MAX_SUPPORTED_TEMPORAL_PRECISION);
-            String dataType = format("time(%d)", precision);
-            return WriteMapping.longMapping(dataType, sqlServerTimeWriteFunction(precision));
+        if (TIME_WITH_TIME_ZONE.equals(type) || TIMESTAMP_TZ_MILLIS.equals(type)) {
+            throw new TrinoException(NOT_SUPPORTED, "Unsupported column type: " + type.getDisplayName());
+        }
+        if (TIMESTAMP_MILLIS.equals(type)) {
+            // TODO use `timestampWriteFunction` (https://github.com/trinodb/trino/issues/6910)
+            return WriteMapping.longMapping("datetime(3)", timestampWriteFunctionUsingSqlTimestamp(TIMESTAMP_MILLIS));
+        }
+        if (VARBINARY.equals(type)) {
+            return WriteMapping.sliceMapping("mediumblob", varbinaryWriteFunction());
         }
 
-        if (type instanceof TimestampType) {
-            TimestampType timestampType = (TimestampType) type;
-            String dataType = format("datetime2(%d)", min(timestampType.getPrecision(), MAX_SUPPORTED_TEMPORAL_PRECISION));
-            if (timestampType.getPrecision() <= MAX_SHORT_PRECISION) {
-                return WriteMapping.longMapping(dataType, timestampWriteFunction(timestampType));
+        if (type instanceof CharType) {
+            return WriteMapping.sliceMapping("char(" + ((CharType) type).getLength() + ")", charWriteFunction());
+        }
+
+        if (type instanceof VarcharType) {
+            VarcharType varcharType = (VarcharType) type;
+            String dataType;
+            if (varcharType.isUnbounded()) {
+                dataType = "longtext";
             }
-            return WriteMapping.objectMapping(dataType, longTimestampWriteFunction(timestampType));
+            else if (varcharType.getBoundedLength() <= 255) {
+                dataType = "tinytext";
+            }
+            else if (varcharType.getBoundedLength() <= 65535) {
+                dataType = "text";
+            }
+            else if (varcharType.getBoundedLength() <= 16777215) {
+                dataType = "mediumtext";
+            }
+            else {
+                dataType = "longtext";
+            }
+            return WriteMapping.sliceMapping(dataType, varcharWriteFunction());
         }
 
-        // TODO implement proper type mapping
+        if (type.equals(jsonType)) {
+            return WriteMapping.sliceMapping("json", varcharWriteFunction());
+        }
+
         return legacyToWriteMapping(session, type);
-    }
-
-    private LongWriteFunction sqlServerTimeWriteFunction(int precision)
-    {
-        return new LongWriteFunction()
-        {
-            @Override
-            public String getBindExpression()
-            {
-                // Binding setObject(LocalTime) can result with "The data types time and datetime are incompatible in the equal to operator."
-                // when write function is used for predicate pushdown.
-                return format("CAST(? AS time(%s))", precision);
-            }
-
-            @Override
-            public void set(PreparedStatement statement, int index, long picosOfDay)
-                    throws SQLException
-            {
-                picosOfDay = round(picosOfDay, 12 - precision);
-                if (picosOfDay == PICOSECONDS_PER_DAY) {
-                    picosOfDay = 0;
-                }
-                LocalTime localTime = fromTrinoTime(picosOfDay);
-                statement.setString(index, localTime.toString());
-            }
-        };
-    }
-
-    @Override
-    public Optional<JdbcExpression> implementAggregation(ConnectorSession session, AggregateFunction aggregate, Map<String, ColumnHandle> assignments)
-    {
-        // TODO support complex ConnectorExpressions
-        return aggregateFunctionRewriter.rewrite(session, aggregate, assignments);
-    }
-
-    private static Optional<JdbcTypeHandle> toTypeHandle(DecimalType decimalType)
-    {
-        return Optional.of(new JdbcTypeHandle(Types.NUMERIC, Optional.of("decimal"), Optional.of(decimalType.getPrecision()), Optional.of(decimalType.getScale()), Optional.empty(), Optional.empty()));
     }
 
     @Override
     protected Optional<BiFunction<String, Long, String>> limitFunction()
     {
-        return Optional.of((sql, limit) -> format("SELECT TOP %s * FROM (%s) o", limit, sql));
+        return Optional.of((sql, limit) -> sql + " LIMIT " + limit);
     }
 
     @Override
@@ -374,24 +354,24 @@ public class SnellerClient
 
                         switch (sortItem.getSortOrder()) {
                             case ASC_NULLS_FIRST:
-                                // In SQL Server ASC implies NULLS FIRST
+                                // In MySQL ASC implies NULLS FIRST
                             case DESC_NULLS_LAST:
-                                // In SQL Server DESC implies NULLS LAST
+                                // In MySQL DESC implies NULLS LAST
                                 return Stream.of(columnSorting);
 
                             case ASC_NULLS_LAST:
                                 return Stream.of(
-                                        format("(CASE WHEN %s IS NULL THEN 1 ELSE 0 END) ASC", quoted(sortItem.getColumn().getColumnName())),
+                                        format("ISNULL(%s) ASC", quoted(sortItem.getColumn().getColumnName())),
                                         columnSorting);
                             case DESC_NULLS_FIRST:
                                 return Stream.of(
-                                        format("(CASE WHEN %s IS NULL THEN 1 ELSE 0 END) DESC", quoted(sortItem.getColumn().getColumnName())),
+                                        format("ISNULL(%s) DESC", quoted(sortItem.getColumn().getColumnName())),
                                         columnSorting);
                         }
                         throw new UnsupportedOperationException("Unsupported sort order: " + sortItem.getSortOrder());
                     })
                     .collect(joining(", "));
-            return format("%s ORDER BY %s OFFSET 0 ROWS FETCH NEXT %s ROWS ONLY", query, orderBy, limit);
+            return format("%s ORDER BY %s LIMIT %s", query, orderBy, limit);
         });
     }
 
@@ -401,55 +381,8 @@ public class SnellerClient
         return true;
     }
 
-    @Override
-    protected boolean isSupportedJoinCondition(JdbcJoinCondition joinCondition)
+    private static Optional<JdbcTypeHandle> toTypeHandle(DecimalType decimalType)
     {
-        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
-            // Not supported in SQL Server
-            return false;
-        }
-
-        // Remote database can be case insensitive.
-        return Stream.of(joinCondition.getLeftColumn(), joinCondition.getRightColumn())
-                .map(JdbcColumnHandle::getColumnType)
-                .noneMatch(type -> type instanceof CharType || type instanceof VarcharType);
-    }
-
-    @Override
-    public void abortReadConnection(Connection connection)
-            throws SQLException
-    {
-        // Abort connection before closing. Without this, the SQL Server driver
-        // attempts to drain the connection by reading all the results.
-        connection.abort(directExecutor());
-    }
-
-    public static ColumnMapping varbinaryColumnMapping()
-    {
-        return ColumnMapping.sliceMapping(
-                VARBINARY,
-                (resultSet, columnIndex) -> wrappedBuffer(resultSet.getBytes(columnIndex)),
-                varbinaryWriteFunction(),
-                DISABLE_PUSHDOWN);
-    }
-
-    private static SliceWriteFunction varbinaryWriteFunction()
-    {
-        return new SliceWriteFunction()
-        {
-            @Override
-            public void set(PreparedStatement statement, int index, Slice value)
-                    throws SQLException
-            {
-                statement.setBytes(index, value.getBytes());
-            }
-
-            @Override
-            public void setNull(PreparedStatement statement, int index)
-                    throws SQLException
-            {
-                statement.setBytes(index, null);
-            }
-        };
+        return Optional.of(new JdbcTypeHandle(Types.NUMERIC, Optional.of("decimal"), Optional.of(decimalType.getPrecision()), Optional.of(decimalType.getScale()), Optional.empty(), Optional.empty()));
     }
 }

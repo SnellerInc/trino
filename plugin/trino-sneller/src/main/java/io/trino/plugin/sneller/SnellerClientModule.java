@@ -25,12 +25,9 @@ import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.ForBaseJdbc;
 import io.trino.plugin.jdbc.JdbcClient;
-import io.trino.plugin.jdbc.MaxDomainCompactionThreshold;
 import io.trino.plugin.jdbc.credential.CredentialProvider;
 
-import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.trino.plugin.jdbc.JdbcModule.bindTablePropertiesProvider;
-import static io.trino.plugin.sneller.SnellerClient.SNELLER_MAX_LIST_EXPRESSIONS;
 
 public class SnellerClientModule
         implements Module
@@ -40,7 +37,6 @@ public class SnellerClientModule
     {
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(SnellerClient.class).in(Scopes.SINGLETON);
         bindTablePropertiesProvider(binder, SnellerTableProperties.class);
-        newOptionalBinder(binder, Key.get(int.class, MaxDomainCompactionThreshold.class)).setBinding().toInstance(SNELLER_MAX_LIST_EXPRESSIONS);
     }
 
     @Provides
