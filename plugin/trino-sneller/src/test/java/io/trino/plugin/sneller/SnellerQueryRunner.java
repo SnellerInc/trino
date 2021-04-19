@@ -45,6 +45,7 @@ public final class SnellerQueryRunner
 
             connectorProperties = new HashMap<>(ImmutableMap.copyOf(connectorProperties));
             connectorProperties.putIfAbsent("connection-url", "jdbc:sneller:http://localhost:8081");
+            connectorProperties.putIfAbsent("join-pushdown.enabled", "true");
 
             queryRunner.installPlugin(new SnellerPlugin());
             queryRunner.createCatalog(CATALOG, "sneller", connectorProperties);
