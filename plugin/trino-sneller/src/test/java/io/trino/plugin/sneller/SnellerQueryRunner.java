@@ -31,6 +31,8 @@ public final class SnellerQueryRunner
 {
     private static final String CATALOG = "sneller";
 
+    private SnellerQueryRunner() {}
+
     public static QueryRunner createSnellerQueryRunner(
             Map<String, String> extraProperties,
             Map<String, String> connectorProperties)

@@ -14,7 +14,6 @@
 package io.trino.plugin.sneller;
 
 import com.google.inject.Binder;
-import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
@@ -27,8 +26,6 @@ import io.trino.plugin.jdbc.ForBaseJdbc;
 import io.trino.plugin.jdbc.JdbcClient;
 import io.trino.plugin.jdbc.credential.CredentialProvider;
 
-import static io.trino.plugin.jdbc.JdbcModule.bindTablePropertiesProvider;
-
 public class SnellerClientModule
         implements Module
 {
@@ -36,7 +33,6 @@ public class SnellerClientModule
     public void configure(Binder binder)
     {
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(SnellerClient.class).in(Scopes.SINGLETON);
-        bindTablePropertiesProvider(binder, SnellerTableProperties.class);
     }
 
     @Provides

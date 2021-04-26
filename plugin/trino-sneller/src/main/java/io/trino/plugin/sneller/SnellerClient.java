@@ -14,7 +14,18 @@
 package io.trino.plugin.sneller;
 
 import com.google.common.collect.ImmutableSet;
-import io.trino.plugin.jdbc.*;
+import io.trino.plugin.jdbc.BaseJdbcClient;
+import io.trino.plugin.jdbc.BaseJdbcConfig;
+import io.trino.plugin.jdbc.ColumnMapping;
+import io.trino.plugin.jdbc.ConnectionFactory;
+import io.trino.plugin.jdbc.JdbcColumnHandle;
+import io.trino.plugin.jdbc.JdbcExpression;
+import io.trino.plugin.jdbc.JdbcJoinCondition;
+import io.trino.plugin.jdbc.JdbcSortItem;
+import io.trino.plugin.jdbc.JdbcTableHandle;
+import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.PreparedQuery;
+import io.trino.plugin.jdbc.WriteMapping;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRewriter;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRule;
 import io.trino.plugin.jdbc.expression.ImplementAvgDecimal;
@@ -24,12 +35,28 @@ import io.trino.plugin.jdbc.expression.ImplementCountAll;
 import io.trino.plugin.jdbc.expression.ImplementMinMax;
 import io.trino.plugin.jdbc.expression.ImplementSum;
 import io.trino.spi.TrinoException;
-import io.trino.spi.connector.*;
-import io.trino.spi.type.*;
+import io.trino.spi.connector.AggregateFunction;
+import io.trino.spi.connector.ColumnHandle;
+import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.connector.JoinCondition;
+import io.trino.spi.connector.JoinStatistics;
+import io.trino.spi.connector.JoinType;
+import io.trino.spi.type.CharType;
+import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.Decimals;
+import io.trino.spi.type.StandardTypes;
+import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeManager;
+import io.trino.spi.type.TypeSignature;
+import io.trino.spi.type.VarcharType;
 
 import javax.inject.Inject;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Types;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -39,10 +66,35 @@ import java.util.stream.Stream;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.trino.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
-import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.*;
+import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalDefaultScale;
+import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRounding;
+import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRoundingMode;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
-import static io.trino.plugin.jdbc.StandardColumnMappings.*;
+import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.charWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.defaultCharColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.defaultVarcharColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.doubleColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.doubleWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.integerWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.longDecimalWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.realColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.timestampWriteFunctionUsingSqlTimestamp;
+import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryReadFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
@@ -113,7 +165,7 @@ public class SnellerClient
     public void abortReadConnection(Connection connection)
             throws SQLException
     {
-        // Abort connection before closing. Without this, the SQL Server driver
+        // Abort connection before closing. Without this, the driver
         // attempts to drain the connection by reading all the results.
         connection.abort(directExecutor());
     }
@@ -138,7 +190,6 @@ public class SnellerClient
         // Sneller uses catalogs instead of schemas
         return resultSet.getString("TABLE_CAT");
     }
-
 
     @Override
     public Optional<PreparedQuery> implementJoin(
@@ -259,7 +310,7 @@ public class SnellerClient
             return WriteMapping.longMapping("float", realWriteFunction());
         }
         if (type == DOUBLE) {
-            return WriteMapping.doubleMapping("double precision", doubleWriteFunction());
+            return WriteMapping.doubleMapping("double", doubleWriteFunction());
         }
 
         if (type instanceof DecimalType) {
